@@ -502,11 +502,11 @@ with tab1:
                         <div style="font-weight: 700;">{row['name']}</div>
                         <div style="background-color: #E3F2FD; padding: 2px 8px; border-radius: 20px; font-size: 0.75rem;">{row['type']}</div>
                     </div>
-                    <div style="display: flex; gap: 16px; margin-top: 8px; font-size: 0.85rem;">
-                        <div>📊 利用率: {row['utilization']:.1%}</div>
-                        <div>💰 {row['price']} 元/度</div>
-                        <div>🔌 空闲: {row['available_slots']}</div>
-                        <div>📏 距离: {row['distance_km']:.1f} km</div>
+                    <div style="display: flex; gap: 12px; margin-top: 8px; font-size: 0.75rem; flex-wrap: nowrap; overflow-x: auto; white-space: nowrap;">
+                        <div style="white-space: nowrap;">📊 利用率: {row['utilization']:.1%}</div>
+                        <div style="white-space: nowrap;">💰 {row['price']} 元/度</div>
+                        <div style="white-space: nowrap;">🔌 空闲: {row['available_slots']}</div>
+                        <div style="white-space: nowrap;">📏 距离: {row['distance_km']:.1f} km</div>
                     </div>
                     <div style="margin-top: 8px;"><div style="background-color: #E5E7EB; border-radius: 20px; height: 6px;"><div style="background-color: {bar_color}; width: {row['utilization']*100}%; height: 6px; border-radius: 20px;"></div></div></div>
                 </div>
