@@ -1,45 +1,48 @@
-# Python
+# Python 虚拟环境和缓存
+venv/
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
 *.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
+dist/
+build/
 *.egg
 
-# Virtual Environment
-venv/
-env/
-ENV/
-
-# IDE
-.vscode/
+# IDE 配置
 .idea/
+.vscode/
 *.swp
 *.swo
 
-# Streamlit
-.streamlit/secrets.toml
+# 敏感信息：所有 secrets.toml（无论路径）
+**/secrets.toml
+secrets.toml
 
-# OS
-.DS_Store
-Thumbs.db
+# 忽略根目录下的 .streamlit 文件夹（通常用于全局 secrets）
+/.streamlit/
 
-# 数据文件（大文件不上传）
-*.csv
-*.xlsx
+# 数据库文件（本地 SQLite）
 *.db
 *.sqlite
+*.sqlite3
+data/*.db
+user_data.db
+
+# 临时文件与构建产物
+*.log
+*.tmp
+.DS_Store
+build/
+dist/
+hooks/
+2.31.0
+
+# 其他可能存在的敏感或临时文件
+.streamlitsecrets.toml
+# PyInstaller 生成文件
+*.spec
+
+# 本地工具脚本（非核心）
+tools/optimize_word_document.bat
+tools/word_document_optimizer.py
