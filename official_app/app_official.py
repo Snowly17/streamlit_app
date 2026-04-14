@@ -537,11 +537,12 @@ with st.sidebar:
     max_display = st.slider(
         "最大显示充电桩数",
         min_value=50,
-        max_value=500,
-        value=200,
-        step=50,
+        max_value=150,  # 改为150
+        value=150,  # 默认值也改为150
+        step=25,  # 步长改为25，更精细
         help="减少显示数量可大幅提升地图渲染性能（统计指标仍基于全量数据）"
     )
+
     st.subheader("📺 大屏轮播模式")
     enable_carousel = st.checkbox("开启自动轮播", value=False)
     if enable_carousel:
