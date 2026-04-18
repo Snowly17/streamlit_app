@@ -20,10 +20,17 @@ def get_supabase_client():
     try:
         supabase_url = st.secrets["SUPABASE_URL"]
         supabase_key = st.secrets["SUPABASE_KEY"]
+
+        # 如果 URL 是标准的项目 URL，尝试替换为事务池器 URL
+        if supabase_url.startswith("https://") and ".supabase.co" in supabase_url:
+            # 从标准 URL 中提取项目ID
+            project_id = supabase_url.replace("https://", "").replace(".supabase.co", "")
+            # 替换为事务池器 URL，注意这里的池器地址可能需要根据你的项目所在区域调整
+            supabase_url = f"https://{project_id}.pooler.supabase.com"
+
         return create_client(supabase_url, supabase_key)
     except Exception as e:
-        st.error(f"Supabase 连接失败: {e}")  # 页面上直接显示
-        print(f"Supabase 连接失败: {e}")     # 日志记录
+        st.error(f"Supabase 连接失败: {e}")
         return None
 
 supabase = get_supabase_client()
