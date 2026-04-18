@@ -22,7 +22,8 @@ def get_supabase_client():
         supabase_key = st.secrets["SUPABASE_KEY"]
         return create_client(supabase_url, supabase_key)
     except Exception as e:
-        st.error(f"Supabase 连接失败: {e}\n请检查 .streamlit/secrets.toml 配置")
+        st.error(f"Supabase 连接失败: {e}")  # 页面上直接显示
+        print(f"Supabase 连接失败: {e}")     # 日志记录
         return None
 
 supabase = get_supabase_client()
@@ -40,8 +41,9 @@ def register_user(username, password):
         supabase.table("users").insert({"username": username, "password": password}).execute()
         return True, "注册成功"
     except Exception as e:
-        print(f"注册失败: {e}")
-        return False, f"注册失败: {e}"
+        error_msg = str(e)
+        print(f"注册失败详细错误: {error_msg}")
+        return False, f"注册失败: {error_msg}"
 
 def check_login(username, password):
     if not username or not password:
@@ -55,8 +57,10 @@ def check_login(username, password):
         else:
             return False, "用户名或密码错误"
     except Exception as e:
-        print(f"登录失败: {e}")
-        return False, "系统错误"
+        # 关键修改：打印详细错误到日志，并返回具体错误信息
+        error_msg = str(e)
+        print(f"登录失败详细错误: {error_msg}")  # 这会输出到 Streamlit Cloud 的日志
+        return False, f"系统错误: {error_msg}"   # 页面上也会显示具体原因
 
 def insert_charging_history(username, station_name, date, cost):
     if supabase is None:
