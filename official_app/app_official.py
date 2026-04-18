@@ -582,8 +582,6 @@ def get_cached_charger_data(use_real):
 
 with st.spinner("正在加载充电桩数据..."):
     charger_data = get_cached_charger_data(use_real)
-if not enable_carousel:
-    st.success(f"数据加载完成，共 {len(charger_data)} 个充电站")
 
 def extract_district(address):
     # 北京全部行政区列表
@@ -1857,7 +1855,6 @@ if enable_carousel:
 else:
     # 单视图模式
     st.title("🏛️ 政府/运营商端 · 充电桩智能监管与规划系统")
-    st.subheader(f"当前视图：{view_mode}")
 
     if view_mode == "🔥 热力图":
         render_heatmap()
