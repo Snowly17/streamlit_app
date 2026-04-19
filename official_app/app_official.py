@@ -1309,12 +1309,16 @@ def render_investment():
     with row2_col1:
         st.markdown("<h3 style='margin-top:0rem; margin-bottom:0.5rem;'>📝 合作意向登记</h3>", unsafe_allow_html=True)
         with st.form("investment_form"):
-            name = st.text_input("企业名称")
-            contact = st.text_input("联系人")
+            name = st.text_input("企业名称", placeholder="请输入企业名称")
+            contact = st.text_input("联系人", placeholder="请输入联系人姓名")
             submitted = st.form_submit_button("提交意向")
             if submitted:
-                st.success("已收到您的合作意向，我们将尽快与您联系。")
-
+                if not name.strip():
+                    st.error("请填写企业名称")
+                elif not contact.strip():
+                    st.error("请填写联系人")
+                else:
+                    st.success(f"已收到 {name} 的合作意向，我们将尽快与您联系。")
     with row2_col2:
         st.markdown("<h3 style='margin-top:0rem; margin-bottom:0.5rem;'>🏛️ 优惠政策</h3>", unsafe_allow_html=True)
         st.info("""
