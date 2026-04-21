@@ -382,7 +382,7 @@ def get_popup_html(row):
 
 # ================== 地图生成函数（统一使用 Folium + 高德卫星图 style=8）==================
 def create_heatmap_fig(data):
-    center_lat, center_lon = data['lat'].mean(), data['lon'].mean()
+    center_lat, center_lon = 39.92, 116.46
     tiles = 'http://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'
     m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles=tiles, attr='高德地图')
     heat_data = [[row['lat'], row['lon'], row['utilization']] for _, row in data.iterrows()]
@@ -785,21 +785,35 @@ def render_prediction():
         growth_rate = st.slider("基准增长率", 0.8, 2.0, 1.2, 0.05)
     with col_param2:
         seasonal_factor = st.slider("季节性因子（冬季）", 0.8, 1.5, 1.1, 0.05)
+
+    # 获取全量预测（基于距离的基准）
     pred_full = get_predictions(filtered_data)
-    display_indices = display_data.index
-    pred_display = [pred_full[i] for i in range(len(filtered_data)) if filtered_data.index[i] in display_indices]
-    # 加入随机波动，使散点图不再呈现平滑线性关系
-    import random
-    random.seed(42)  # 固定种子，保证每次运行结果一致
-    adjusted_pred_display = []
-    for i, p in enumerate(pred_display):
-        base_pred = p * growth_rate * (seasonal_factor if i % 3 == 0 else 1.0)
-        fluctuation = random.uniform(-0.1, 0.15) * (1 - base_pred * 0.5)
-        pred_val = base_pred + fluctuation
-        adjusted_pred_display.append(min(0.95, max(0.05, pred_val)))
+
+    # 先复制 display_data，用于存储预测结果
     data_pred_display = display_data.copy()
+    display_indices = display_data.index
+
+    # 提取与 display_data 对应的基准预测值
+    pred_display = [pred_full[i] for i in range(len(filtered_data)) if filtered_data.index[i] in display_indices]
+
+    import random
+    random.seed(42)
+
+    adjusted_pred_display = []
+    # 使用 data_pred_display 的行迭代
+    for i, (idx, row) in enumerate(data_pred_display.iterrows()):
+        p = pred_display[i]  # 对应的基准预测
+        base_pred = p * growth_rate * (seasonal_factor if i % 3 == 0 else 1.0)
+        # 让波动偏向上升：范围 -0.05 到 +0.2
+        fluctuation = random.uniform(-0.05, 0.2) * (1 - base_pred * 0.5)
+        pred_val = base_pred + fluctuation
+        # 关键：不低于当前利用率
+        pred_val = max(pred_val, row['utilization'])
+        adjusted_pred_display.append(min(0.95, max(0.05, pred_val)))
+
     data_pred_display['predicted'] = adjusted_pred_display
 
+    # 左侧散点图
     col1, col2 = st.columns(2)
     with col1:
         fig_scatter = px.scatter(
@@ -837,9 +851,8 @@ def render_prediction():
         base_pred[0] = int(base_pred[0] * seasonal_factor)  # 7月（冬季）
         base_pred[4] = int(base_pred[4] * seasonal_factor)  # 11月（冬季）
 
-        # 加入随机波动（±8%），使趋势线有起伏
-        import random
-        random.seed(123)  # 固定种子，保证每次运行结果一致
+        # 加入随机波动（±8%）
+        random.seed(123)
         pred_demand = []
         for v in base_pred:
             fluctuation = random.uniform(0.92, 1.08)
@@ -880,10 +893,11 @@ def render_prediction():
         )
         st.plotly_chart(fig_combo, use_container_width=True, config={'responsive': True})
 
-    st.subheader("📊 各区域需求对比预测")
-    # 获取所有实际存在的区域，过滤掉 '其他区域'
+    # ========== 各区域当前 vs 预测利用率对比 ==========
+    st.subheader("📊 各区域当前利用率 vs 预测利用率对比")
+
+    # 获取所有实际存在的区域（排除“其他区域”）
     existing_districts = [d for d in filtered_data['district'].unique() if d != '其他区域']
-    # 如果实际区域少于8个，补充常见行政区（确保柱子数量）
     all_common_districts = ['东城区', '西城区', '朝阳区', '海淀区', '丰台区', '石景山区',
                             '通州区', '大兴区', '昌平区', '顺义区', '房山区', '门头沟区']
     if len(existing_districts) < 8:
@@ -891,306 +905,372 @@ def render_prediction():
     else:
         districts = existing_districts
 
+    # 1. 每个区域的当前平均利用率
+    current_region_util = filtered_data.groupby('district')['utilization'].mean().to_dict()
+
+    # 2. 每个站点的预测利用率（基于距离 + growth_rate，含上下界）
+    base_pred_full = get_predictions(filtered_data)  # 每个站点的基准预测
+    station_pred = []
+    for idx, row in filtered_data.iterrows():
+        base_pred = base_pred_full[filtered_data.index.get_loc(idx)]
+        pred_val = base_pred * growth_rate
+        lower_bound = row['utilization'] * 0.8
+        upper_bound = min(row['utilization'] * 1.5, 0.9)
+        pred_val = max(lower_bound, min(upper_bound, pred_val))
+        station_pred.append(pred_val)
+
     region_pred = {}
-    import random
     for d in districts:
-        sub_data = filtered_data[filtered_data['district'] == d]
-        if len(sub_data) > 0:
-            avg_util = sub_data['utilization'].mean()
+        mask = filtered_data['district'] == d
+        if mask.any():
+            region_avg_pred = np.mean([station_pred[i] for i, val in enumerate(mask) if val])
         else:
-            # 无真实数据时，基于区域名生成一个基准值（0.3~0.8）
-            avg_util = 0.3 + (hash(d) % 50) / 100
-            avg_util = min(0.85, avg_util)
+            # 无数据区域估算
+            if d in ['东城区', '西城区', '朝阳区', '海淀区']:
+                base_est = 0.7
+            elif d in ['丰台区', '石景山区', '通州区', '大兴区', '昌平区', '顺义区']:
+                base_est = 0.5
+            else:
+                base_est = 0.4
+            region_avg_pred = min(0.9, base_est * growth_rate)
+        region_pred[d] = round(region_avg_pred, 3)
 
-        # 区域系数：中心区增速慢，郊区增速快
-        core_districts = ['东城区', '西城区', '朝阳区', '海淀区']
-        suburban_districts = ['通州区', '大兴区', '昌平区', '顺义区', '房山区', '门头沟区', '密云区', '怀柔区',
-                              '平谷区', '延庆区']
-        if d in core_districts:
-            region_factor = 0.85
-        elif d in suburban_districts:
-            region_factor = 1.25
-        else:
-            region_factor = 1.0
+    # 3. 构建对比数据框
+    compare_data = []
+    for d in districts:
+        current = current_region_util.get(d, 0)
+        pred = region_pred.get(d, current)
+        growth = pred - current
+        growth_pct = (growth / current) if current > 0 else 0
+        compare_data.append({
+            '区域': d,
+            '当前利用率': current,
+            '预测利用率': pred,
+            '增长率': growth_pct
+        })
+    df_compare = pd.DataFrame(compare_data)
+    df_compare = df_compare.sort_values('当前利用率', ascending=False)
 
-        # 随机波动（基于区域名哈希，保证每次运行结果一致）
-        random.seed(hash(d) % 10000)
-        fluctuation = 0.85 + random.random() * 0.3  # 0.85 ~ 1.15
+    # 4. 绘制分组柱状图
+    fig_compare = go.Figure()
+    fig_compare.add_trace(go.Bar(
+        x=df_compare['区域'],
+        y=df_compare['当前利用率'],
+        name='当前利用率',
+        marker_color='#1E6BB0',
+        text=df_compare['当前利用率'].apply(lambda x: f'{x:.1%}'),
+        textposition='outside'
+    ))
+    fig_compare.add_trace(go.Bar(
+        x=df_compare['区域'],
+        y=df_compare['预测利用率'],
+        name='预测利用率',
+        marker_color='#FF8C00',
+        text=df_compare['预测利用率'].apply(lambda x: f'{x:.1%}'),
+        textposition='outside'
+    ))
 
-        pred_val = avg_util * growth_rate * region_factor * fluctuation
-        pred_val = min(0.95, pred_val)
-        region_pred[d] = pred_val
+    # 添加增长率标注
+    for i, row in df_compare.iterrows():
+        if row['增长率'] != 0:
+            fig_compare.add_annotation(
+                x=row['区域'],
+                y=row['预测利用率'] + 0.02,
+                text=f"↑{row['增长率']:.1%}",
+                showarrow=False,
+                font=dict(size=10, color='#FF8C00'),
+                xanchor='center'
+            )
 
-    pred_df = pd.DataFrame(list(region_pred.items()), columns=['区域', '预测利用率'])
-    pred_df = pred_df.sort_values('预测利用率', ascending=False)
-    fig_reg = px.bar(pred_df, x='区域', y='预测利用率', color='预测利用率',
-                     color_continuous_scale='RdYlGn_r',
-                     title="各区域未来需求预测对比",
-                     text_auto='.1%')
-    fig_reg.update_layout(
+    fig_compare.update_layout(
+        barmode='group',
+        title="各区域当前 vs 预测利用率对比",
+        xaxis_title="区域",
+        yaxis_title="利用率",
+        yaxis_tickformat=".0%",
         autosize=True,
-        margin=dict(l=60, r=60, t=40, b=20),
+        margin=dict(l=60, r=60, t=80, b=20),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
         xaxis=dict(title_font=dict(color='white'), tickfont=dict(color='white'), tickangle=-45),
         yaxis=dict(title_font=dict(color='white'), tickfont=dict(color='white')),
-        coloraxis_colorbar=dict(
-            title=dict(text='预测利用率', font=dict(color='white', size=14)),
-            tickfont=dict(color='white', size=12),
-            bgcolor='rgba(0,0,0,0.5)',
-            bordercolor='white'
+        legend=dict(
+            title=dict(text='', font=dict(color='white')),
+            font=dict(color='white'),
+            bgcolor='rgba(0,0,0,0.6)'
         )
     )
-    st.plotly_chart(fig_reg, use_container_width=True, config={'responsive': True})
+    st.plotly_chart(fig_compare, use_container_width=True, config={'responsive': True})
 
-    # 用指标卡片代替文字结论
+    # 指标卡片
     col_g1, col_g2 = st.columns(2)
     col_g1.metric("预期需求增长率", f"{int((growth_rate - 1) * 100)}%")
     col_g2.metric("冬季需求高峰因子", f"{seasonal_factor}")
 
 def render_optimization():
-    st.subheader("💡 布局优化建议")
-    high_demand_full = filtered_data[filtered_data['utilization'] > 0.7]
-    low_util_full = filtered_data[filtered_data['utilization'] < 0.3]
+    st.subheader("💡 智能布局优化建议（基于当前及预测需求）")
 
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        high_demand_disp = display_data[display_data['utilization'] > 0.7]
-        low_util_disp = display_data[display_data['utilization'] < 0.3]
-        center_lat = display_data['lat'].mean()
-        center_lon = display_data['lon'].mean()
-        tiles = 'http://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles=tiles, attr='高德地图')
-        marker_cluster = MarkerCluster().add_to(m)
+    # ---------- 1. 预测参数控件（与预测分析模块保持一致） ----------
+    col_param1, col_param2 = st.columns(2)
+    with col_param1:
+        growth_rate = st.slider("基准增长率", 0.8, 2.0, 1.2, 0.05,
+                                help="电动汽车保有量增长带来的整体需求增长系数")
+    with col_param2:
+        seasonal_factor = st.slider("季节性因子（冬季）", 0.8, 1.5, 1.1, 0.05,
+                                    help="冬季需求高峰放大系数")
 
-        for _, row in high_demand_disp.iterrows():
-            folium.Marker(
-                [row['lat'], row['lon']],
-                popup=get_popup_html(row),
-                icon=folium.Icon(color='red', icon='bolt', prefix='fa')
-            ).add_to(marker_cluster)
+    # ---------- 2. 计算每个站点的预测利用率 ----------
+    # 获取基准预测（基于距市中心距离）
+    base_pred_full = get_predictions(filtered_data)  # list, 与 filtered_data 顺序一致
+    station_pred = []   # 存储每个站点的最终预测利用率
+    for idx, row in filtered_data.iterrows():
+        base_pred = base_pred_full[filtered_data.index.get_loc(idx)]
+        # 应用增长率和季节性因子（简化：季节性按站点索引奇偶模拟，实际可更精细）
+        seasonal = seasonal_factor if (filtered_data.index.get_loc(idx) % 3 == 0) else 1.0
+        pred_val = base_pred * growth_rate * seasonal
+        # 约束：不低于当前利用率的80%，不高于当前利用率的150%且不超过0.9
+        lower_bound = row['utilization'] * 0.8
+        upper_bound = min(row['utilization'] * 1.5, 0.9)
+        pred_val = max(lower_bound, min(upper_bound, pred_val))
+        station_pred.append(pred_val)
+    filtered_data['pred_util'] = station_pred
+    filtered_data['growth_rate'] = (filtered_data['pred_util'] - filtered_data['utilization']) / filtered_data['utilization'].replace(0, 0.01)
 
-        for _, row in low_util_disp.iterrows():
-            folium.Marker(
-                [row['lat'], row['lon']],
-                popup=get_popup_html(row),
-                icon=folium.Icon(color='green', icon='bolt', prefix='fa')
-            ).add_to(marker_cluster)
+    # ---------- 3. 定义分类阈值 ----------
+    util_high_threshold = 0.6    # 当前利用率高于此值为“高当前”
+    growth_high_threshold = 0.2  # 增长率高于此值为“高增长”
 
-        top_demand = display_data.nlargest(10, 'utilization')
-        recommended_locations = []
-        for _, row in top_demand.iterrows():
-            offsets = [(0.001, 0.001), (0.001, -0.001), (-0.001, 0.001), (-0.001, -0.001), (0.002, 0)]
-            for dx, dy in offsets:
-                new_lat = row['lat'] + dx
-                new_lon = row['lon'] + dy
-                if not any(abs(new_lat - r[0]) < 0.0005 and abs(new_lon - r[1]) < 0.0005 for r in recommended_locations):
-                    recommended_locations.append((new_lat, new_lon, row['name']))
-                    if len(recommended_locations) >= 8:
-                        break
-            if len(recommended_locations) >= 8:
-                break
+    def classify_station(row):
+        util = row['utilization']
+        growth = row['growth_rate']
+        if util >= util_high_threshold and growth >= growth_high_threshold:
+            return '紧急扩容'      # 高当前 + 高增长
+        elif util < util_high_threshold and growth >= growth_high_threshold:
+            return '提前新建'      # 低当前 + 高增长
+        elif util >= util_high_threshold and growth < growth_high_threshold:
+            return '优化运营'      # 高当前 + 低增长
+        else:
+            return '暂缓/迁移'     # 低当前 + 低增长
 
-        for lat, lon, near_station in recommended_locations:
-            popup_html = f"""
-            <div style="font-size:12px; min-width:180px;">
-                <b>🚀 推荐新建充电桩</b><br>
-                靠近：{near_station}<br>
-                理由：高需求区域，现有站点利用率过高
-            </div>
-            """
-            folium.Marker(
-                [lat, lon],
-                popup=popup_html,
-                icon=folium.Icon(color='purple', icon='star', prefix='fa')
-            ).add_to(m)
+    filtered_data['suggestion'] = filtered_data.apply(classify_station, axis=1)
 
-        st_folium(m, width='100%', height=500)
+    # ---------- 4. 地图可视化（使用 display_data 提高性能） ----------
+    # 为地图显示准备数据（与 display_data 对齐）
+    display_data_with_class = display_data.copy()
+    # 将分类映射到 display_data 中
+    suggestion_map = filtered_data['suggestion'].to_dict()
+    growth_map = filtered_data['growth_rate'].to_dict()
+    pred_map = filtered_data['pred_util'].to_dict()
+    display_data_with_class['suggestion'] = display_data_with_class.index.map(lambda idx: suggestion_map.get(idx, '暂缓/迁移'))
+    display_data_with_class['growth_rate'] = display_data_with_class.index.map(lambda idx: growth_map.get(idx, 0))
+    display_data_with_class['pred_util'] = display_data_with_class.index.map(lambda idx: pred_map.get(idx, 0))
 
-    with col2:
-        st.metric("高需求站点（建议扩容）", len(high_demand_full))
-        st.metric("低利用率站点（建议优化）", len(low_util_full))
-        st.metric("推荐新建点位", len(recommended_locations))
-
-    # ========== 新增：充电桩利用率排名与对比 ==========
-    st.subheader("📊 充电桩利用率排名与对比")
-
-    col_rank1, col_rank2 = st.columns(2)
-    with col_rank1:
-        st.write("**🔥 利用率最高 TOP10**")
-        top10 = filtered_data.nlargest(10, 'utilization')[['name', 'district', 'type', 'utilization', 'power']].copy()
-        top10['utilization'] = top10['utilization'].map(lambda x: f"{x:.1%}")
-        # 自定义 HTML 表格
-        st.markdown(top10.to_html(index=False, classes='custom-table', escape=False), unsafe_allow_html=True)
-
-    with col_rank2:
-        st.write("**❄️ 利用率最低 BOTTOM10**")
-        bottom10 = filtered_data.nsmallest(10, 'utilization')[['name', 'district', 'type', 'utilization', 'power']].copy()
-        bottom10['utilization'] = bottom10['utilization'].map(lambda x: f"{x:.1%}")
-        st.markdown(bottom10.to_html(index=False, classes='custom-table', escape=False), unsafe_allow_html=True)
-
-    # 区域对比柱状图
-    region_avg = filtered_data.groupby('district')['utilization'].mean().reset_index()
-    region_avg = region_avg.sort_values('utilization', ascending=False)
-    fig_region = px.bar(region_avg, x='district', y='utilization',
-                         title="各区域平均利用率对比",
-                         labels={'utilization': '平均利用率', 'district': '区域'},
-                         text_auto='.1%',
-                         color='utilization', color_continuous_scale='RdYlGn_r')
-    fig_region.update_layout(
-        autosize=True,
-        margin=dict(l=60, r=60, t=40, b=20),
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(title_font=dict(color='white'), tickfont=dict(color='white'), tickangle=-45),
-        yaxis=dict(title_font=dict(color='white'), tickfont=dict(color='white'))
-    )
-    st.plotly_chart(fig_region, use_container_width=True)
-
-    # 类型对比箱线图
-    fig_type = px.box(filtered_data, x='type', y='utilization',
-                       title="快充 vs 慢充 利用率分布",
-                       labels={'type': '充电类型', 'utilization': '利用率'},
-                       color='type', color_discrete_map={"快充": "#FF4136", "慢充": "#0074D9"})
-    fig_type.update_layout(
-        autosize=True,
-        margin=dict(l=60, r=60, t=40, b=20),
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(title_font=dict(color='white'), tickfont=dict(color='white')),
-        yaxis=dict(title_font=dict(color='white'), tickfont=dict(color='white')),
-        legend=dict(font=dict(color='white'), bgcolor='rgba(0,0,0,0.6)')
-    )
-    st.plotly_chart(fig_type, use_container_width=True)
-
-    # ========== 原有优化建议表格（优先扩容/改造站点） ==========
-    st.subheader("📋 具体优化方案")
-    if not high_demand_full.empty:
-        high_demand_filtered = high_demand_full[high_demand_full['district'] != '其他区域']
-        if not high_demand_filtered.empty:
-            st.markdown("**优先扩容区域**")
-            df_top5 = high_demand_filtered.nlargest(5, 'utilization')[['name', 'district', 'utilization']]
-            df_top5['utilization'] = df_top5['utilization'].map(lambda x: f"{x:.1%}")
-            st.markdown(df_top5.to_html(index=False, classes='custom-table', escape=False), unsafe_allow_html=True)
-
-    if not low_util_full.empty:
-        st.markdown("**优先改造站点**")
-        df_bottom5 = low_util_full.nsmallest(5, 'utilization')[['name', 'district', 'utilization']]
-        df_bottom5['utilization'] = df_bottom5['utilization'].map(lambda x: f"{x:.1%}")
-        st.markdown(df_bottom5.to_html(index=False, classes='custom-table', escape=False), unsafe_allow_html=True)
-
-    st.subheader("📊 多方案投资回报对比")
-    scenarios = pd.DataFrame({
-        "方案": ["方案A: 新建5个快充站", "方案B: 改造10个慢充站", "方案C: 混合策略"],
-        "投资额(万元)": [800, 300, 1000],
-        "预期利用率提升": ["15%", "20%", "25%"],
-        "回收期(年)": [3, 2.5, 3.2]
-    })
-    st.markdown(scenarios.to_html(index=False, classes='custom-table', escape=False), unsafe_allow_html=True)
-
-    # 模拟推荐选择（用指标卡片显示推荐理由）
-    reason_map = {
-        "方案A: 新建5个快充站": "投资额较高（800万元），预期利用率提升15%，回收期3年，适合长期战略布局。",
-        "方案B: 改造10个慢充站": "投资额最低（300万元），预期利用率提升20%，回收期仅2.5年，**性价比最高**。",
-        "方案C: 混合策略": "投资额最大（1000万元），预期利用率提升25%最高，但回收期较长（3.2年），适合资金充裕的快速扩张。"
+    # 图标/颜色映射
+    suggestion_icon = {
+        '紧急扩容': {'color': 'red', 'icon': 'exclamation-triangle', 'prefix': 'fa'},
+        '提前新建': {'color': 'green', 'icon': 'leaf', 'prefix': 'fa'},
+        '优化运营': {'color': 'orange', 'icon': 'cog', 'prefix': 'fa'},
+        '暂缓/迁移': {'color': 'gray', 'icon': 'ban', 'prefix': 'fa'}
     }
-    selected_scenario = st.radio(
-        "推荐方案选择",
-        options=scenarios['方案'].tolist(),
-        index=1,
-        format_func=lambda x: x
-    )
-    st.info(f"**方案详情**：{reason_map[selected_scenario]}")
 
-    # 将建议文本改为列表形式（仍可保留少量文字，但用项目符号代替大段描述）
-    st.markdown("**📌 核心行动项**")
-    st.markdown("- 在国贸、望京等5个高需求盲区新建快充站（预计覆盖率提升8%）")
-    st.markdown("- 将10个低效慢充站改为快充站（预计利用率提升20%）")
-    st.markdown("- 对利用率<30%的站点实施分时优惠（引导用户分流）")
-
-
-def render_optimization_simple():
-    """大屏轮播模式下的优化建议（含地图，精简版）"""
-    st.subheader("💡 布局优化建议（精简版）")
-
-    high_demand_full = filtered_data[filtered_data['utilization'] > 0.7]
-    low_util_full = filtered_data[filtered_data['utilization'] < 0.3]
-
-    # 推荐新建点位（基于高需求站点）
-    recommended_count = min(len(high_demand_full), 8)
-
-    # 使用 display_data 绘制地图（避免全量数据过慢）
-    high_demand_disp = display_data[display_data['utilization'] > 0.7]
-    low_util_disp = display_data[display_data['utilization'] < 0.3]
-
-    # 生成推荐点位（简单策略：在高需求站点附近偏移）
-    top_demand = display_data.nlargest(10, 'utilization')
-    recommended_locations = []
-    for _, row in top_demand.iterrows():
-        offsets = [(0.001, 0.001), (0.001, -0.001), (-0.001, 0.001), (-0.001, -0.001)]
-        for dx, dy in offsets:
-            new_lat = row['lat'] + dx
-            new_lon = row['lon'] + dy
-            if not any(abs(new_lat - r[0]) < 0.0005 and abs(new_lon - r[1]) < 0.0005 for r in recommended_locations):
-                recommended_locations.append((new_lat, new_lon, row['name']))
-                if len(recommended_locations) >= 8:
-                    break
-        if len(recommended_locations) >= 8:
-            break
-
-    # 构建地图
-    center_lat = display_data['lat'].mean()
-    center_lon = display_data['lon'].mean()
+    # 创建地图
+    center_lat = display_data_with_class['lat'].mean()
+    center_lon = display_data_with_class['lon'].mean()
     tiles = 'http://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'
     m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles=tiles, attr='高德地图')
     marker_cluster = MarkerCluster().add_to(m)
 
-    # 高需求站点（红色）
-    for _, row in high_demand_disp.iterrows():
-        folium.Marker(
-            [row['lat'], row['lon']],
-            popup=get_popup_html(row),
-            icon=folium.Icon(color='red', icon='bolt', prefix='fa')
-        ).add_to(marker_cluster)
-
-    # 低利用率站点（绿色）
-    for _, row in low_util_disp.iterrows():
-        folium.Marker(
-            [row['lat'], row['lon']],
-            popup=get_popup_html(row),
-            icon=folium.Icon(color='green', icon='bolt', prefix='fa')
-        ).add_to(marker_cluster)
-
-    # 推荐新建点位（紫色星星）
-    for lat, lon, near_station in recommended_locations:
-        popup_html = f"""
-        <div style="font-size:12px; min-width:180px;">
-            <b>🚀 推荐新建充电桩</b><br>
-            靠近：{near_station}<br>
-            理由：高需求区域，现有站点利用率过高
+    for _, row in display_data_with_class.iterrows():
+        sug = row['suggestion']
+        icon_conf = suggestion_icon.get(sug, suggestion_icon['暂缓/迁移'])
+        popup_text = f"""
+        <div style="font-size:12px; min-width:240px;">
+            <b>{row['name']}</b><br>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:5px;">
+                <span style="background:#f0f0f0; padding:2px 6px; border-radius:4px;">类型: {row['type']}</span>
+                <span style="background:#f0f0f0; padding:2px 6px; border-radius:4px;">当前利用率: {row['utilization']:.1%}</span>
+                <span style="background:#f0f0f0; padding:2px 6px; border-radius:4px;">预测利用率: {row['pred_util']:.1%}</span>
+                <span style="background:#f0f0f0; padding:2px 6px; border-radius:4px;">增长率: {row['growth_rate']:+.1%}</span>
+                <span style="background:#f0f0f0; padding:2px 6px; border-radius:4px;">建议: {sug}</span>
+            </div>
         </div>
         """
         folium.Marker(
-            [lat, lon],
-            popup=popup_html,
-            icon=folium.Icon(color='purple', icon='star', prefix='fa')
-        ).add_to(m)
+            [row['lat'], row['lon']],
+            popup=popup_text,
+            icon=folium.Icon(color=icon_conf['color'], icon=icon_conf['icon'], prefix=icon_conf['prefix'])
+        ).add_to(marker_cluster)
 
     st_folium(m, width='100%', height=500)
 
-    # 指标卡片
+    # ---------- 5. 统计卡片：四类站点数量 ----------
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("🔴 紧急扩容", len(filtered_data[filtered_data['suggestion'] == '紧急扩容']))
+    col2.metric("🟢 提前新建", len(filtered_data[filtered_data['suggestion'] == '提前新建']))
+    col3.metric("🟡 优化运营", len(filtered_data[filtered_data['suggestion'] == '优化运营']))
+    col4.metric("⚪ 暂缓/迁移", len(filtered_data[filtered_data['suggestion'] == '暂缓/迁移']))
+
+    # ---------- 6. 优先级排序表（综合指数） ----------
+    st.subheader("📋 优先级行动清单（按综合指数排序）")
+    # 综合指数 = 增长率权重0.6 + 当前利用率权重0.4（可调）
+    filtered_data['score'] = 0.6 * filtered_data['growth_rate'] + 0.4 * filtered_data['utilization']
+    priority_df = filtered_data.sort_values('score', ascending=False)
+    # 选择展示列
+    display_cols = ['name', 'district', 'type', 'utilization', 'pred_util', 'growth_rate', 'suggestion', 'score']
+    priority_table = priority_df[display_cols].copy()
+    priority_table['utilization'] = priority_table['utilization'].apply(lambda x: f"{x:.1%}")
+    priority_table['pred_util'] = priority_table['pred_util'].apply(lambda x: f"{x:.1%}")
+    priority_table['growth_rate'] = priority_table['growth_rate'].apply(lambda x: f"{x:+.1%}")
+    priority_table['score'] = priority_table['score'].apply(lambda x: f"{x:.3f}")
+    st.markdown(priority_table.head(15).to_html(index=False, classes='custom-table', escape=False), unsafe_allow_html=True)
+
+    # ---------- 7. 区域级汇总建议 ----------
+    st.subheader("📊 各区域综合建议")
+    region_summary = filtered_data.groupby('district').agg({
+        'utilization': 'mean',
+        'pred_util': 'mean',
+        'growth_rate': 'mean',
+        'suggestion': lambda x: x.mode()[0] if not x.mode().empty else '暂缓/迁移'
+    }).reset_index()
+    region_summary['utilization'] = region_summary['utilization'].apply(lambda x: f"{x:.1%}")
+    region_summary['pred_util'] = region_summary['pred_util'].apply(lambda x: f"{x:.1%}")
+    region_summary['growth_rate'] = region_summary['growth_rate'].apply(lambda x: f"{x:+.1%}")
+    st.markdown(region_summary.to_html(index=False, classes='custom-table', escape=False), unsafe_allow_html=True)
+
+    # ---------- 8. 具体行动项文字说明 ----------
+    st.markdown("**📌 核心行动项（基于四象限模型）**")
+    # 动态生成建议
+    urgent_count = len(filtered_data[filtered_data['suggestion'] == '紧急扩容'])
+    new_count = len(filtered_data[filtered_data['suggestion'] == '提前新建'])
+    optimize_count = len(filtered_data[filtered_data['suggestion'] == '优化运营'])
+    delay_count = len(filtered_data[filtered_data['suggestion'] == '暂缓/迁移'])
+
+    st.markdown(f"""
+    **📌 核心行动项（基于四象限模型）**
+    - 🔴 **紧急扩容**：{urgent_count} 个站点当前需求高且增长快，建议立即增加充电桩数量或升级功率。
+    - 🟢 **提前新建**：{new_count} 个站点当前需求较低但未来增长潜力大，建议提前规划新建快充站。
+    - 🟡 **优化运营**：{optimize_count} 个站点需求已饱和，建议实施分时定价、会员优惠等策略提升周转。
+    - ⚪ **暂缓/迁移**：{delay_count} 个站点长期低需求，可考虑迁移至高增长区域。
+    """)
+    # ---------- 9. 投资回报对比（保留原有示例，可结合新分类微调） ----------
+    st.subheader("📊 投资回报对比示例")
+    scenarios = pd.DataFrame({
+        "方案": ["方案A: 优先扩容紧急站点", "方案B: 提前新建潜力站点", "方案C: 混合策略"],
+        "投资额(万元)": [800, 600, 1200],
+        "预期利用率提升": ["12%", "18%", "22%"],
+        "回收期(年)": [3.2, 2.8, 3.5]
+    })
+    st.markdown(scenarios.to_html(index=False, classes='custom-table', escape=False), unsafe_allow_html=True)
+    st.info("💡 建议优先实施「提前新建」类站点，其投资回报率通常更高。")
+
+    # 可选：显示参数设置说明
+    st.caption(f"当前分类阈值：当前利用率 ≥ {util_high_threshold:.0%} 为高当前，增长率 ≥ {growth_high_threshold:.0%} 为高增长。")
+
+
+def render_optimization_simple():
+    """大屏轮播模式下的优化建议（精简版，基于四象限分类）"""
+    st.subheader("💡 智能布局优化建议（基于当前及预测需求）")
+
+    # ---------- 1. 使用默认预测参数（与轮播预测模块保持一致）----------
+    growth_rate = 1.2        # 默认基准增长率
+    seasonal_factor = 1.1    # 默认季节性因子
+
+    # ---------- 2. 计算每个站点的预测利用率 ----------
+    base_pred_full = get_predictions(filtered_data)  # 全量预测
+    station_pred = []
+    for idx, row in filtered_data.iterrows():
+        base_pred = base_pred_full[filtered_data.index.get_loc(idx)]
+        seasonal = seasonal_factor if (filtered_data.index.get_loc(idx) % 3 == 0) else 1.0
+        pred_val = base_pred * growth_rate * seasonal
+        lower_bound = row['utilization'] * 0.8
+        upper_bound = min(row['utilization'] * 1.5, 0.9)
+        pred_val = max(lower_bound, min(upper_bound, pred_val))
+        station_pred.append(pred_val)
+    filtered_data['pred_util'] = station_pred
+    filtered_data['growth_rate'] = (filtered_data['pred_util'] - filtered_data['utilization']) / filtered_data['utilization'].replace(0, 0.01)
+
+    # ---------- 3. 四象限分类 ----------
+    util_high_threshold = 0.6
+    growth_high_threshold = 0.2
+    def classify_station(row):
+        util = row['utilization']
+        growth = row['growth_rate']
+        if util >= util_high_threshold and growth >= growth_high_threshold:
+            return '紧急扩容'
+        elif util < util_high_threshold and growth >= growth_high_threshold:
+            return '提前新建'
+        elif util >= util_high_threshold and growth < growth_high_threshold:
+            return '优化运营'
+        else:
+            return '暂缓/迁移'
+    filtered_data['suggestion'] = filtered_data.apply(classify_station, axis=1)
+
+    # ---------- 4. 地图可视化（使用 display_data）----------
+    display_data_with_class = display_data.copy()
+    suggestion_map = filtered_data['suggestion'].to_dict()
+    growth_map = filtered_data['growth_rate'].to_dict()
+    pred_map = filtered_data['pred_util'].to_dict()
+    display_data_with_class['suggestion'] = display_data_with_class.index.map(lambda idx: suggestion_map.get(idx, '暂缓/迁移'))
+    display_data_with_class['growth_rate'] = display_data_with_class.index.map(lambda idx: growth_map.get(idx, 0))
+    display_data_with_class['pred_util'] = display_data_with_class.index.map(lambda idx: pred_map.get(idx, 0))
+
+    # 图标映射
+    suggestion_icon = {
+        '紧急扩容': {'color': 'red', 'icon': 'exclamation-triangle', 'prefix': 'fa'},
+        '提前新建': {'color': 'green', 'icon': 'leaf', 'prefix': 'fa'},
+        '优化运营': {'color': 'orange', 'icon': 'cog', 'prefix': 'fa'},
+        '暂缓/迁移': {'color': 'gray', 'icon': 'ban', 'prefix': 'fa'}
+    }
+
+    center_lat = display_data_with_class['lat'].mean()
+    center_lon = display_data_with_class['lon'].mean()
+    tiles = 'http://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles=tiles, attr='高德地图')
+    marker_cluster = MarkerCluster().add_to(m)
+
+    for _, row in display_data_with_class.iterrows():
+        sug = row['suggestion']
+        icon_conf = suggestion_icon.get(sug, suggestion_icon['暂缓/迁移'])
+        popup_text = f"""
+        <div style="font-size:12px; min-width:240px;">
+            <b>{row['name']}</b><br>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:5px;">
+                <span>当前利用率: {row['utilization']:.1%}</span>
+                <span>预测利用率: {row['pred_util']:.1%}</span>
+                <span>增长率: {row['growth_rate']:+.1%}</span>
+                <span>建议: {sug}</span>
+            </div>
+        </div>
+        """
+        folium.Marker(
+            [row['lat'], row['lon']],
+            popup=popup_text,
+            icon=folium.Icon(color=icon_conf['color'], icon=icon_conf['icon'], prefix=icon_conf['prefix'])
+        ).add_to(marker_cluster)
+
+    st_folium(m, width='100%', height=500)
+
+    # ---------- 5. 统计卡片：四类站点数量 ----------
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("🔴 紧急扩容", len(filtered_data[filtered_data['suggestion'] == '紧急扩容']))
+    col2.metric("🟢 提前新建", len(filtered_data[filtered_data['suggestion'] == '提前新建']))
+    col3.metric("🟡 优化运营", len(filtered_data[filtered_data['suggestion'] == '优化运营']))
+    col4.metric("⚪ 暂缓/迁移", len(filtered_data[filtered_data['suggestion'] == '暂缓/迁移']))
+
+    # ---------- 6. 精简行动项 ----------
+    st.markdown("**📌 核心行动项**")
+    urgent_count = len(filtered_data[filtered_data['suggestion'] == '紧急扩容'])
+    new_count = len(filtered_data[filtered_data['suggestion'] == '提前新建'])
+    optimize_count = len(filtered_data[filtered_data['suggestion'] == '优化运营'])
+
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("高需求站点（建议扩容）", len(high_demand_full))
+        st.markdown(f"🔴 **紧急扩容**  \n{urgent_count} 个高需求高增长站点")
     with col2:
-        st.metric("低利用率站点（建议优化）", len(low_util_full))
+        st.markdown(f"🟢 **提前新建**  \n{new_count} 个低需求高增长潜力站点")
     with col3:
-        st.metric("推荐新建点位", len(recommended_locations))
-
-    st.markdown("**📌 核心建议**")
-    st.markdown("- 优先在利用率 >70% 的区域新建快充站（地图红色标记）")
-    st.markdown("- 对利用率 <30% 的站点实施价格引导或迁移（地图绿色标记）")
-    st.markdown("- 紫色星星为推荐新建点位")
+        st.markdown(f"🟡 **优化运营**  \n{optimize_count} 个站点实施分时优惠")
+    st.caption(f"分类阈值：当前利用率≥{util_high_threshold:.0%}为高当前，增长率≥{growth_high_threshold:.0%}为高增长")
 
 def render_satisfaction():
     """独立的满意度分析视图"""
@@ -1789,22 +1869,107 @@ if enable_carousel:
         render_satisfaction_simple()
 
     elif current_view == "🔮 预测分析":
-        st.subheader("🔮 需求预测（默认参数）")
-        growth_rate = 1.2
+        st.subheader("📊 各区域当前利用率 vs 预测利用率对比")
+        # 固定参数（与截图中的 10% 增长率、1.1 冬季因子一致）
+        growth_rate = 1.10   # 预期需求增长率 10%
         seasonal_factor = 1.1
-        months = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月']
-        hist_demand = [100, 120, 150, 180, 210, 240]
-        pred_demand = [int(240 * growth_rate * seasonal_factor), int(270 * growth_rate),
-                       int(300 * growth_rate), int(330 * growth_rate),
-                       int(360 * growth_rate * seasonal_factor), int(390 * growth_rate)]
-        all_months = months[:6] + months[6:]
-        all_demand = hist_demand + pred_demand
-        colors = ['#2ECC40'] * 6 + ['#FF4136'] * 6
-        fig_combo = go.Figure()
-        fig_combo.add_trace(go.Bar(x=all_months, y=all_demand, marker_color=colors, text=all_demand, textposition='outside'))
-        fig_combo.add_trace(go.Scatter(x=months[5:], y=[hist_demand[-1]] + pred_demand, mode='lines+markers', name='趋势线', line=dict(color='black', width=2, dash='dash')))
-        fig_combo.update_layout(title="月度需求预测", xaxis_title="月份", yaxis_title="充电需求量 (相对值)", autosize=True, margin=dict(l=60, r=60, t=40, b=20))
-        st.plotly_chart(fig_combo, use_container_width=True, config={'responsive': True})
+
+        # 获取所有有效区域（排除“其他区域”）
+        existing_districts = [d for d in filtered_data['district'].unique() if d != '其他区域']
+        all_common_districts = ['东城区', '西城区', '朝阳区', '海淀区', '丰台区', '石景山区',
+                                '通州区', '大兴区', '昌平区', '顺义区', '房山区', '门头沟区']
+        if len(existing_districts) < 8:
+            districts = list(set(existing_districts + all_common_districts))
+        else:
+            districts = existing_districts
+
+        # 1. 当前区域平均利用率
+        current_region_util = filtered_data.groupby('district')['utilization'].mean().to_dict()
+
+        # 2. 预测区域平均利用率（基于距离模型 + 增长率）
+        base_pred_full = get_predictions(filtered_data)   # 每个站点的基准预测
+        station_pred = []
+        for idx, row in filtered_data.iterrows():
+            base_pred = base_pred_full[filtered_data.index.get_loc(idx)]
+            pred_val = base_pred * growth_rate
+            # 约束：不低于当前80%，不高于当前150%且不超过0.9
+            lower_bound = row['utilization'] * 0.8
+            upper_bound = min(row['utilization'] * 1.5, 0.9)
+            pred_val = max(lower_bound, min(upper_bound, pred_val))
+            station_pred.append(pred_val)
+
+        region_pred = {}
+        for d in districts:
+            mask = filtered_data['district'] == d
+            if mask.any():
+                region_avg_pred = np.mean([station_pred[i] for i, val in enumerate(mask) if val])
+            else:
+                # 无数据区域估算
+                if d in ['东城区', '西城区', '朝阳区', '海淀区']:
+                    base_est = 0.7
+                elif d in ['丰台区', '石景山区', '通州区', '大兴区', '昌平区', '顺义区']:
+                    base_est = 0.5
+                else:
+                    base_est = 0.4
+                region_avg_pred = min(0.9, base_est * growth_rate)
+            region_pred[d] = round(region_avg_pred, 3)
+
+        # 3. 构建对比数据
+        compare_data = []
+        for d in districts:
+            current = current_region_util.get(d, 0)
+            pred = region_pred.get(d, current)
+            compare_data.append({
+                '区域': d,
+                '当前利用率': current,
+                '预测利用率': pred
+            })
+        df_compare = pd.DataFrame(compare_data)
+        df_compare = df_compare.sort_values('当前利用率', ascending=False)
+
+        # 4. 绘制分组柱状图（无增长率标注）
+        fig_compare = go.Figure()
+        fig_compare.add_trace(go.Bar(
+            x=df_compare['区域'],
+            y=df_compare['当前利用率'],
+            name='当前利用率',
+            marker_color='#1E6BB0',
+            text=df_compare['当前利用率'].apply(lambda x: f'{x:.1%}'),
+            textposition='outside'
+        ))
+        fig_compare.add_trace(go.Bar(
+            x=df_compare['区域'],
+            y=df_compare['预测利用率'],
+            name='预测利用率',
+            marker_color='#FF8C00',
+            text=df_compare['预测利用率'].apply(lambda x: f'{x:.1%}'),
+            textposition='outside'
+        ))
+
+        fig_compare.update_layout(
+            barmode='group',
+            title="各区域当前 vs 预测利用率对比",
+            xaxis_title="区域",
+            yaxis_title="利用率",
+            yaxis_tickformat=".0%",
+            autosize=True,
+            margin=dict(l=60, r=60, t=80, b=20),
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            xaxis=dict(title_font=dict(color='white'), tickfont=dict(color='white'), tickangle=-45),
+            yaxis=dict(title_font=dict(color='white'), tickfont=dict(color='white')),
+            legend=dict(
+                title=dict(text=''),
+                font=dict(color='white'),
+                bgcolor='rgba(0,0,0,0.6)'
+            )
+        )
+        st.plotly_chart(fig_compare, use_container_width=True, config={'responsive': True})
+
+        # 显示参数卡片
+        col_g1, col_g2 = st.columns(2)
+        col_g1.metric("预期需求增长率", f"{int((growth_rate - 1) * 100)}%")
+        col_g2.metric("冬季需求高峰因子", f"{seasonal_factor}")
     elif current_view == "🌿 碳排放估算":
         render_emission_simple()
 
